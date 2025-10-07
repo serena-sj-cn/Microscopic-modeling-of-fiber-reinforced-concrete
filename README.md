@@ -1,57 +1,38 @@
-# 混凝土三相细观模型
+# Concrete Three-Phase Mesoscale Model
 
-用于三点弯曲缺口梁中三相混凝土细观模型（骨料-ITZ-砂浆）自动生成的ABAQUS Python脚本。
+ABAQUS Python script for automated generation of three-phase concrete mesoscale model (aggregate-ITZ-mortar) in three-point bending notched beam.
 
-## 🚀 功能特点
+## Features
 
-- **三相组成**：骨料、ITZ和砂浆基体
-- **分级骨料**：4.75-8mm和2.5-4.75mm骨料
-- **自动生成**：带干涉检查的随机骨料投放
-- **真实几何**：300×60×30mm带中心缺口梁
+- **Three-phase composition**: Aggregate, ITZ, and mortar matrix
+- **Automatic generation**: Random aggregate placement with interference check
 
-## 📁 文件
-
-- `three_phase_model.py` - 主建模脚本
-- `README.md` - 本文件
-
-## ⚙️ 使用方法
-
-1. 在ABAQUS CAE中打开
-2. 分段运行脚本（遵循"分开运行"注释）
-3. 按需调整参数：
+##  Usage
+1. Open in ABAQUS CAE
+2. Run script in sections
+3. Adjust parameters as needed:
 
 ```python
-# 主要可调参数
-ConcLength = 300.0    # 梁长度
-VolumeRatio = 0.02    # 骨料体积比
-ITZ_thickness = 2.0   # ITZ厚度
+# Main adjustable parameters
+ConcLength = 300.0    # Beam length
+VolumeRatio = 0.02    # Aggregate volume ratio
+ITZ_thickness = 2.0   # ITZ thickness
 ```
 
-## 🎯 参数
+##  Notes
 
-**骨料尺寸：**
-- 大骨料：4.75-8.0mm
-- 小骨料：2.5-4.75mm
+- Run in sections due to script length
+- Execution time: ~30+ minutes for full model
+- Adjust ITZ thickness if meshing fails
 
-**材料属性：**
-- 骨料：50 GPa，ν=0.16
-- 砂浆：30 GPa，ν=0.22
-- ITZ：22.5 GPa，ν=0.22
+##  Output
 
-## ⚠️ 注意事项
-
-- 由于脚本较长，建议分段运行
-- 完整模型执行时间：约30分钟以上
-- 如网格划分失败，请调整ITZ厚度
-
-## 📊 输出结果
-
-- 完整的三维有限元模型
-- 各相材料分配
-- 骨料与ITZ之间的约束关系
-- 可直接用于分析
+- Complete 3D finite element model
+- Material assignments for all phases
+- Tie constraints between aggregate and ITZ
+- Ready for analysis
 
 ---
 
-*仅限研究使用*
+*For research use only*
 
