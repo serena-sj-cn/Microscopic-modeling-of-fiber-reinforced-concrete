@@ -1,0 +1,465 @@
+# This is a three-phase modeling (aggregate-ITZ-mortar matrix) in a three-point bending notched beam based on determined aggregate gradation. All programming ideas and GUI operation steps are clearly written in comments.
+# Ignore PyCharm error warnings as many functions are ABAQUS-specific. As long as no errors occur in ABAQUS command window, it's fine. Input in blocks when possible.
+# Recommended software: Python Reader, which can display rpy file code corresponding to GUI operations in real time, equivalent to ABAQUS providing script templates, but the code may be redundant and requires filtering key functions.
+from abaqus import *
+from abaqusConstants import *
+from caeModules import *
+import os     # Ensure portability to other systems
+import numpy as np    # For generating random numbers later
+import math
+import matplotlib.pyplot as plt   # For plotting later
+from visualization import *
+from odbAccess import *
+import xlwt    # For Excel import/export
+Mdb()    # This code clears previous models and starts fresh
+# Remove mask
+session.journalOptions.setValues(replayGeometry=INDEX,recoverGeometry=INDEX)
+session.journalOptions.setValues(replayGeometry=COORDINATE,recoverGeometry=COORDINATE)
+# Prism boundary settings
+ConcLength=300.0   # Prism length in mm (x-direction)
+ConcWidth=30.0   # Prism width in mm (z-direction)
+ConcHeight=60.0  # Prism height in mm (y-direction)
+# Notch boundary settings
+GapLength=1.0    # Notch length along x-direction in mm
+GapWidth=30.0    # Notch length along z-direction in mm
+GapHeight=30.0    # Notch length along y-direction in mm
+# Variables for volume-based aggregate placement
+VolumeConc=ConcLength*ConcWidth*ConcHeight-GapLength*GapWidth*GapHeight    # Concrete volume
+AggVolume=0         # Coarse aggregate volume
+# Function to check interference for outer diameter instances (aggregate+ITZ)
+def interact_judgement (points,point):             # 'point' refers to newly generated point to compare with each point in 'points' list
+    x1=point[0]
+    y1=point[1]
+    z1=point[2]
+    r1=point[3]
+    sign=True
+    for p in points:
+        x2=p[0]
+        y2=p[1]
+        z2=p[2]
+        r2=p[3]
+        distance=sqrt((x1-x2)**2+(y1-y2)**2+(z1-z2)**2)
+        if distance < (r1+r2)+1.0:    # Add 1.0 to avoid overly narrow meshes during meshing
+            sign=False
+            break     # End for loop and output false
+    return sign
+# If condition is true, point intersects with one in points, break stops loop and outputs sign=false. If no intersection, outputs true.
+k=0   # Sphere numbering
+points=[]    # Create list containing coordinates and radii of outer diameter instances that passed interference check
+SphereData=[]   # Contains one more element than points: sphere number (number, x, y, z, radius, pure aggregate radius, ITZ thickness)
+# Generate spheres and radii randomly
+# Coarse aggregates with diameter 9.5~16mm account for 27.846% of concrete volume (calculated using apparent density, but lightweight aggregates need water-absorbed density calculation) 25.88%
+# Coarse aggregates with diameter 5~9.5mm account for 11.154% of concrete volume (calculated using apparent density, but lightweight aggregates need water-absorbed density calculation) 10.37%
+# Generate large aggregate information first to avoid scattered small aggregates occupying space and affecting large aggregate placement
+# Since ITZ thickness of 25~30 microns may cause meshing failure, increase thickness to 0.2~0.3mm. Code handles this directly. SphereRadius represents (pure aggregate + ITZ)
+# Place large aggregates in Zone 1
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(4.75, 8.0)
+    ITZ_thickness = 2.0       # Can also use random numbers here, similar calling method
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance=SphereRadius+1.0
+    x1 = np.random.uniform(0.0+BoundaryDistance,ConcLength-BoundaryDistance)
+    y1 = np.random.uniform(GapHeight+BoundaryDistance,ConcHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.02/2:   # Reduced volume ratio for faster execution
+        break
+# Place small aggregates in Zone 1
+AggVolume = 0
+while True:
+    SphereRadiusNet = np.random.uniform(2.5, 4.75)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.0+BoundaryDistance,ConcLength-BoundaryDistance)
+    y1 = np.random.uniform(GapHeight+BoundaryDistance,ConcHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius, SphereRadiusNet, ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius, SphereRadiusNet, ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.01 / 2:   # Reduced volume ratio for faster execution
+        break
+# Place large aggregates in Zone 2
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(4.75, 8.0)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.0+BoundaryDistance,0.5*ConcLength-0.5*GapLength-BoundaryDistance)
+    y1 = np.random.uniform(0.0+BoundaryDistance,GapHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.02/4:   # Reduced volume ratio for faster execution
+        break
+# Place small aggregates in Zone 2
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(2.5, 4.75)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.0 + BoundaryDistance, 0.5 * ConcLength - 0.5 * GapLength - BoundaryDistance)
+    y1 = np.random.uniform(0.0 + BoundaryDistance, GapHeight - BoundaryDistance)
+    z1 = np.random.uniform(0.0 + BoundaryDistance, ConcWidth - BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.01/4:    # Reduced volume ratio for faster execution
+        break
+# Place large aggregates in Zone 3
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(4.75, 8.0)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.5*ConcLength+0.5*GapLength+BoundaryDistance,ConcLength-BoundaryDistance)
+    y1 = np.random.uniform(0.0+BoundaryDistance,GapHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.02/4:    # Reduced volume ratio for faster execution
+        break
+# Place small aggregates in Zone 3 - This block may take 30 minutes
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(2.5, 4.75)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.5 * ConcLength + 0.5 * GapLength + BoundaryDistance, ConcLength - BoundaryDistance)
+    y1 = np.random.uniform(0.0 + BoundaryDistance, GapHeight - BoundaryDistance)
+    z1 = np.random.uniform(0.0 + BoundaryDistance, ConcWidth - BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.01/4:    # Reduced volume ratio for faster execution
+        break
+# Create model and ensure myModel is named Model-1
+if mdb.models.has_key("Model-1"):
+    myModel=mdb.models['Model-1']
+else:
+    myModel=mdb.Model(name='Model-1',modelType=STANDARD_EXPLICIT)
+# Commands to generate complete beam profile part and corresponding instance
+xmin=0
+xmax=ConcLength
+ymin=0
+ymax=ConcHeight
+zmin=0
+zmax=ConcWidth
+zlength=abs(zmax-zmin)
+mySketch_1=myModel.ConstrainedSketch(name="mySketch-1",sheetSize=200.0)
+mySketch_1.rectangle(point1=(xmin,ymin),point2=(xmax,ymax))
+myPart1=myModel.Part(name="Part-Profile",dimensionality=THREE_D,type=DEFORMABLE_BODY)
+myPart1.BaseSolidExtrude(depth=zlength,sketch=mySketch_1)
+myAssembly=myModel.rootAssembly
+myAssembly.Instance(name="Part-Profile",part=myPart1,dependent=OFF)
+del mySketch_1
+del myPart1
+# Generate notch block part and instance
+xmin=0.5*ConcLength-0.5*GapLength
+xmax=0.5*ConcLength+0.5*GapLength
+ymin=0
+ymax=GapHeight
+zmin=0
+zmax=GapWidth
+zlength=abs(zmax-zmin)
+mySketch_2=myModel.ConstrainedSketch(name="mySketch-2",sheetSize=200.0)
+mySketch_2.rectangle(point1=(xmin,ymin),point2=(xmax,ymax))
+myPart2=myModel.Part(name="Part-Gap",dimensionality=THREE_D,type=DEFORMABLE_BODY)
+myPart2.BaseSolidExtrude(depth=zlength,sketch=mySketch_2)
+myAssembly=myModel.rootAssembly
+myAssembly.Instance(name="Part-Gap",part=myPart2,dependent=OFF)
+del mySketch_2
+del myPart2
+###################
+# Generate discrete rigid Punch part and instance in GUI interface
+ConcLength=300.0
+ConcWidth=30.0
+ConcHeight=60.0
+r1=1/12*ConcLength
+Center (1/2*ConcLength, ConcHeight+r1)
+Lower semi-circle
+Extrusion depth=ConcWidth
+# Generate support pin parts and instances in GUI interface
+r2=1/60*ConcLength
+Pin-1 center at (1/6*ConcLength, -r2)
+Pin-2 center at (5/6*ConcLength, -r2)
+Both are upper semi-circles
+Extrusion depth=ConcWidth
+####################
+# Batch generate outer diameter instances (aggregate+ITZ) - Each loop generates one instance Part-Exball-{}
+b=SphereData
+for i in range(len(SphereData)):
+    mySketch_1=myModel.ConstrainedSketch(name="mySketch-1",sheetSize=200.0)
+    mySketch_1.ConstructionLine(point1=(b[i][1], b[i][2] + b[i][4]), point2=(b[i][1], b[i][2] - b[i][4]))  # Endpoints of rotation axis
+    curve = mySketch_1.CircleByCenterPerimeter(center=(b[i][1], b[i][2]), point1=(b[i][1] + b[i][4], b[i][2]))  # curve is a circle
+    mySketch_1.autoTrimCurve(curve1=curve, point1=(b[i][1] - b[i][4], b[i][2]))  # The point in autoTrim function is a point in the trimmed portion
+    mySketch_1.Line(point1=(b[i][1], b[i][2] + b[i][4]), point2=(b[i][1], b[i][2] - b[i][4])) # Complete the shape for revolution
+    partName = 'Part-ExBall-{}'.format(i)
+    myPart1 = myModel.Part(name=partName, dimensionality=THREE_D, type=DEFORMABLE_BODY)  # myPart1 gets overwritten each loop
+    myPart1.BaseSolidRevolve(sketch=mySketch_1, angle=360.0, flipRevolveDirection=OFF)
+    myAssembly = myModel.rootAssembly
+    myAssembly.Instance(name="Part-ExBall-{}".format(i), part=myPart1, dependent=OFF)
+    myAssembly.translate(instanceList=("Part-ExBall-{}".format(i),), vector=(0.0, 0.0, b[i][3]))
+    del mySketch_1
+    del myPart1
+# Batch generate pure aggregate spheres Part-Ball
+for i in range(len(SphereData)):     # SphereData has one more element than points: sphere number (number, x, y, z, radius, pure aggregate radius, ITZ thickness)
+    mySketch_1 = myModel.ConstrainedSketch(name="mySketch-1", sheetSize=200.0)
+    mySketch_1.ConstructionLine(point1=(b[i][1], b[i][2] + b[i][5]), point2=(b[i][1], b[i][2] - b[i][5]))  # Endpoints of rotation axis
+    curve = mySketch_1.CircleByCenterPerimeter(center=(b[i][1], b[i][2]), point1=(b[i][1] + b[i][5], b[i][2]))  # Curve is a circle
+    mySketch_1.autoTrimCurve(curve1=curve, point1=(b[i][1] - b[i][5], b[i][2]))  # The point in autoTrim function is a point in the trimmed portion
+    mySketch_1.Line(point1=(b[i][1], b[i][2] + b[i][5]), point2=(b[i][1], b[i][2] - b[i][5]))
+    partName = 'Part-Ball-{}'.format(i)
+    myPart1 = myModel.Part(name=partName, dimensionality=THREE_D, type=DEFORMABLE_BODY)  # myPart1 gets overwritten each loop
+    myPart1.BaseSolidRevolve(sketch=mySketch_1, angle=360.0, flipRevolveDirection=OFF)
+    myAssembly = myModel.rootAssembly
+    myAssembly.Instance(name="Part-Ball-{}".format(i), part=myPart1, dependent=OFF)
+    myAssembly.translate(instanceList=("Part-Ball-{}".format(i),), vector=(0.0, 0.0, b[i][3]))
+    del mySketch_1
+    del myPart1
+# Use Boolean difference to batch generate ITZ by subtracting inner pure aggregate from outer diameter (aggregate+ITZ) - Using InstanceFromBooleanCut. Generated instance name is ITZ-{}-1, automatically creates part named ITZ-{}
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.InstanceFromBooleanCut(
+        name="ITZ-{}".format(i),
+        instanceToBeCut=mdb.models["Model-1"].rootAssembly.instances['Part-ExBall-{}'.format(i)],
+        cuttingInstances=(mdb.models['Model-1'].rootAssembly.instances['Part-Ball-{}'.format(i)],),
+        originalInstances=SUPPRESS)
+# Part-ExBall-{} and Part-Ball-{} are now SUPPRESSED, so resume their features
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['Part-ExBall-{}'.format(i)].resume()
+# Run separately
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['Part-Ball-{}'.format(i)].resume()
+# Subtract all (aggregate+ITZ) from prism mortar
+for i in range(len(SphereData)):
+    if i==0:
+        updatepart="Part-Profile"
+    else:
+        updatepart="updatepart-{}-1".format(i)
+    updatepart2="updatepart-"+str(i+1)
+    mdb.models["Model-1"].rootAssembly.InstanceFromBooleanCut(
+        name=updatepart2,
+        instanceToBeCut=mdb.models["Model-1"].rootAssembly.instances[updatepart],
+        cuttingInstances=(mdb.models['Model-1'].rootAssembly.instances['Part-ExBall-{}'.format(i)],),
+        originalInstances=SUPPRESS)
+# Still use InstanceFromBooleanCut to subtract notch block
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanCut(
+        name="mortar",
+        instanceToBeCut=mdb.models["Model-1"].rootAssembly.instances["updatepart-{}-1".format(len(SphereData))],
+        cuttingInstances=(mdb.models['Model-1'].rootAssembly.instances["Part-Gap"],),
+        originalInstances=SUPPRESS)
+# Create three sections and set different material properties: section1 for Ball parts, section2 for mortar block part,
+# section3 for ITZ parts. Sections can only be applied to parts, not instances.
+# Set elastic modulus (MPa) and Poisson's ratio (dimensionless) using only Elastic. Aggregate elastic modulus: 50000MPa, Poisson's ratio: 0.16
+mdb.models['Model-1'].Material(name='Material-Ball')
+mdb.models['Model-1'].materials["Material-Ball"].Elastic(table=((50000.0,0.16),))
+mdb.models["Model-1"].HomogeneousSolidSection(name="Section-Ball",material="Material-Ball",thickness=None)
+# Edit tensile strength and fracture energy in GUI interface
+# Convert each part's volume elements into a Set to prevent same section after merge. Then assign Section-Ball to ball parts using for loop.
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].Set(name="Part-Ball-{}".format(i),
+                                                              cells=mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].cells)
+    mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].\
+        SectionAssignment(region=mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].sets["Part-Ball-{}".format(i)],
+                          sectionName="Section-Ball",
+                          offset=0.0,
+                          offsetType = MIDDLE_SURFACE,
+                          offsetField = "",
+                          thicknessAssignment = FROM_SECTION)
+# Set elastic modulus (MPa) and Poisson's ratio (dimensionless) using only Elastic. Mortar elastic modulus: 30000.0MPa, Poisson's ratio: 0.22. Actually only need to assign to "updatepart-{}".format(len(SphereData))
+mdb.models['Model-1'].Material(name='Material-Mortar')
+mdb.models['Model-1'].materials["Material-Mortar"].Elastic(table=((30000.0,0.22),))
+mdb.models["Model-1"].HomogeneousSolidSection(name="Section-Mortar",material="Material-Mortar",thickness=None)
+# Edit tensile strength and fracture energy in GUI interface
+mdb.models["Model-1"].parts["mortar"].Set(name="mortar",
+                                          cells=mdb.models["Model-1"].parts["mortar"].cells)
+mdb.models["Model-1"].parts["mortar"].\
+        SectionAssignment(region=mdb.models["Model-1"].parts["mortar"].sets["mortar"],
+                          sectionName="Section-Mortar",
+                          offset=0.0,
+                          offsetType = MIDDLE_SURFACE,
+                          offsetField = "",
+                          thicknessAssignment = FROM_SECTION)
+# Set elastic modulus (MPa) and Poisson's ratio (dimensionless) using only Elastic. ITZ layer elastic modulus: 22500.0MPa, Poisson's ratio: 0.22
+mdb.models['Model-1'].Material(name='Material-ITZ')
+mdb.models['Model-1'].materials["Material-ITZ"].Elastic(table=((22500.0,0.22),))
+mdb.models["Model-1"].HomogeneousSolidSection(name="Section-ITZ",material="Material-ITZ",thickness=None)
+# Edit tensile strength and fracture energy in GUI interface
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].parts["ITZ-{}".format(i)].Set(name="ITZ-{}".format(i),
+                                                              cells=mdb.models["Model-1"].parts["ITZ-{}".format(i)].cells)
+    mdb.models["Model-1"].parts["ITZ-{}".format(i)].\
+        SectionAssignment(region=mdb.models["Model-1"].parts["ITZ-{}".format(i)].sets["ITZ-{}".format(i)],
+                          sectionName="Section-ITZ",
+                          offset=0.0,
+                          offsetType = MIDDLE_SURFACE,
+                          offsetField = "",
+                          thicknessAssignment = FROM_SECTION)
+##### Enter assembly module, merge all useful instances (pure aggregates, ITZ, mortar block) to generate part-total. Merged instances should preferably all be dependent.
+Cuminstances=[]    # Create a list for storage
+for i in range(len(SphereData)):
+    Cuminstances.append(mdb.models["Model-1"].rootAssembly.instances["Part-Ball-{}".format(i)])
+    Cuminstances.append(mdb.models["Model-1"].rootAssembly.instances["ITZ-{}-1".format(i)])
+# Run this part separately, otherwise may error!!
+Cuminstances.append(mdb.models["Model-1"].rootAssembly.instances["mortar-1"])
+Cuminstances=tuple(Cuminstances)   # Convert to tuple
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanMerge(name="Part-total",instances=Cuminstances,
+                                                            keepIntersections=ON,
+                                                            domain=GEOMETRY)
+##### After merging, check if part-total has Ball, ITZ, mortar corresponding sets. This ensures material properties are preserved after merging.
+# Enter step module - edit analysis steps and field outputs -- enter interaction module -- enter load module -- enter mesh module
+## First enter interaction module, tie outer surface of pure aggregates to inner surface of ITZ
+# Since round function is imprecise, define a rounding function first
+def round_founction (num,floats):
+    num1=float(num*float(10**floats))
+    num2=int(num*float(10**floats))
+    if int((num1-num2)*10) < 5:
+        return float(num2/float(10**floats))
+    elif int ((num1-num2)*10) >= 5:
+        return float (num2/float(10**floats)+float(0.1**floats))
+# Select and tie outer surface of pure aggregates to inner surface of ITZ
+b=SphereData
+for i in range(len(SphereData)):
+    x1=round_founction (b[i][1]+b[i][5],6)
+    y1=round_founction (b[i][2],6)
+    z1=0
+    myPartBall = mdb.models['Model-1'].parts['Part-Ball-{}'.format(i)]
+    myFaceBall = myPartBall.faces.findAt(((x1, y1, z1), ))
+    myPartBall.Surface(side1Faces=myFaceBall, name='Surf-Ball-{}'.format(i))
+# Run separately
+b = SphereData
+for i in range(len(SphereData)):
+    x1 = round_founction(b[i][1] + b[i][5], 6)
+    y1 = round_founction(b[i][2], 6)
+    z1 =round_founction(b[i][3], 6)
+    myPartITZ = mdb.models['Model-1'].parts['ITZ-{}'.format(i)]
+    myFaceITZ = myPartITZ.faces.findAt(((x1, y1, z1), ))
+    myPartITZ.Surface(side1Faces=myFaceITZ, name='Surf-ITZ-{}'.format(i))
+# Run separately
+for i in range(len(SphereData)):
+    region1=mdb.models['Model-1'].rootAssembly.instances['Part-Ball-{}'.format(i)].surfaces['Surf-Ball-{}'.format(i)]
+    region2=mdb.models['Model-1'].rootAssembly.instances['ITZ-{}-1'.format(i)].surfaces['Surf-ITZ-{}'.format(i)]
+    mdb.models['Model-1'].Tie(name='Constraint-Ball-ITZ-{}'.format(i),
+                              master=region1,
+                              slave=region2,
+                              positionToleranceMethod=COMPUTED, adjust=ON,
+                              tieRotations=ON, thickness=ON)
+# Generate display groups for ITZ, aggregates, mortar separately for meshing to avoid original instances being suppressed
+# Generate display groups for ITZ, aggregates, mortar separately for meshing to avoid original instances being suppressed
+a = mdb.models['Model-1'].rootAssembly
+session.viewports['Viewport: 1'].setValues(displayedObject=a)
+set1 = mdb.models['Model-1'].rootAssembly.allInstances['ITZ-0-1'].sets['ITZ-0']  # Subsequent sets are automatically generated
+leaf = dgm.LeafFromSets(sets=(set1, set2, set3, set4, set5, set6, set7, set8,
+    set9, set10, set11, set12, set13, set14, set15, set16, set17, set18, set19,
+    set20, set21, set22, set23, set24, set25, set26, set27, set28, set29,
+    set30, set31, set32, set33, set34, set35, set36, set37, set38, set39,
+    set40, set41, set42, set43, set44, set45, set46, set47, set48, set49,
+    set50, set51, set52, set53, set54, set55, set56, set57, set58, ))
+dg = session.DisplayGroup(leaf=leaf, name='DisplayGroup-ITZ')
+dg1= session.displayGroups['DisplayGroup-ITZ']
+session.viewports['Viewport: 1'].assemblyDisplay.setValues(
+    visibleDisplayGroups=(dg1, ))
+#########
+set1 = mdb.models['Model-1'].rootAssembly.allInstances['Part-Ball-0'].sets['Part-Ball-0']  ## Subsequent sets are automatically generated
+leaf = dgm.LeafFromSets(sets=(set1, set2, set3, set4, set5, set6, set7, set8,
+    set9, set10, set11, set12, set13, set14, set15, set16, set17, set18, set19,
+    set20, set21, set22, set23, set24, set25, set26, set27, set28, set29,
+    set30, set31, set32, set33, set34, set35, set36, set37, set38, set39,
+    set40, set41, set42, set43, set44, set45, set46, set47, set48, set49,
+    set50, set51, set52, set53, set54, set55, set56, set57, set58, ))
+dg = session.DisplayGroup(leaf=leaf, name='DisplayGroup-ball')
+# First make itz and ball instances independent
+for i in range(len(SphereData)):
+    mdb.models['Model-1'].rootAssembly.makeIndependent(instances=(mdb.models['Model-1'].rootAssembly.instances['ITZ-{}-1'.format(i)], ))
+for i in range(len(SphereData)):
+    mdb.models['Model-1'].rootAssembly.makeIndependent(instances=(mdb.models['Model-1'].rootAssembly.instances['Part-Ball-{}'.format(i)], ))
+## Mesh ITZ separately, aggregates and mortar use second-order tetrahedral mesh to reduce element count. Mortar doesn't need merge, directly use mortar.
+Cuminstances_Ball=[]
+for i in range(len(SphereData)):
+    Cuminstances_Ball.append(mdb.models["Model-1"].rootAssembly.instances["Part-Ball-{}".format(i)])
+# Run separately
+Cuminstances_Ball=tuple(Cuminstances_Ball)
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanMerge(name="Part-total-Ball",instances=Cuminstances_Ball,
+                                                            keepIntersections=ON,
+                                                            originalInstances=SUPPRESS,
+                                                            domain=GEOMETRY)
+Cuminstances_ITZ=[]
+for i in range(len(SphereData)):
+    Cuminstances_ITZ.append(mdb.models["Model-1"].rootAssembly.instances["ITZ-{}-1".format(i)])
+# Run separately
+Cuminstances_ITZ=tuple(Cuminstances_ITZ)
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanMerge(name="Part-total-ITZ",instances=Cuminstances_ITZ,
+                                                            keepIntersections=ON,
+                                                            originalInstances=SUPPRESS,
+                                                            domain=GEOMETRY)
+# Restore the two boundaries
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['Part-Ball-{}'.format(i)].resume()
+# Run separately
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['ITZ-{}-1'.format(i)].resume()
+
+# Can use GUI interface seed 2/0.055, 0.1 to mesh part, or use following commands
+p = mdb.models['Model-1'].parts['Part-total']
+p.seedPart(size=2.0, deviationFactor=0.05, minSizeFactor=0.02)
+# First change mesh controls to tetrahedral free mesh in GUI, then input following command
+p = mdb.models['Model-1'].parts['Part-total']
+p.generateMesh()
+# After meshing, use remove selected - element in GUI to view internal sectioning.
