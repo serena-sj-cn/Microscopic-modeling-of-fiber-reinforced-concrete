@@ -1,2 +1,2 @@
-# Microscopic modeling of fiber reinforced concrete
+# Microscopic modeling of lightweight aggregate concrete
 
