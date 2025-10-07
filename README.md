@@ -25,7 +25,7 @@ ITZ_thickness = 2.0   # ITZ thickness
 ---
 ##  Modeling Showcase and Visualization
 <img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/72156407-c8da-45d3-af1f-4c91718fbc51" />
-<img width="400" height="400" alt="image" src="https://github.com/user-attachments/assets/98090130-ab79-46fe-b147-d91cd48905d8" />
+<img width="400" height="380" alt="image" src="https://github.com/user-attachments/assets/98090130-ab79-46fe-b147-d91cd48905d8" />
 <img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/9dcea7b7-c538-4bd9-84d6-3a1d723797a4" />
 <img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/aad9f014-757e-46dc-a125-4b29cd5ddb26" />
 <img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/1f4939c3-bbc8-4fb7-9098-d76707dac6c0" />
