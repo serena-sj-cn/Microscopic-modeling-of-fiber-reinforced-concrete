@@ -1,0 +1,465 @@
+#这是根据测定骨料级配在三点弯曲缺口梁中的三相建模（骨料-ITZ-砂浆基体），所有的编写思路和需要配合GUI界面的操作步骤全部通过注释写清楚了。
+#在pycharm中的报错提醒不用理会，因为很多函数都是ABAQUS中独有的，只要在ABAQUS的命令窗口输入不报错即可，尽量分块输入。
+#推荐一个小软件：Python Reader，可以实时看到GUI界面的操作对应的rpy文件中的代码，相当于ABAQUS自身给我们写脚本的范本，但是其中的代码会比较冗杂，需要自己筛选关键的函数。
+from abaqus import *
+from abaqusConstants import *
+from caeModules import *
+import os     #保证移植到其他系统下也可用
+import numpy as np    #为了后期生成随机数
+import math
+import matplotlib.pyplot as plt   #为了后期绘图
+from visualization import *
+from odbAccess import *
+import xlwt    #导入导出Excel所用
+Mdb()    #此代码会将前面的模型都清空，重新建模
+#去掉掩码
+session.journalOptions.setValues(replayGeometry=INDEX,recoverGeometry=INDEX)
+session.journalOptions.setValues(replayGeometry=COORDINATE,recoverGeometry=COORDINATE)
+#以下是棱柱体边缘区域设定
+ConcLength=300.0   #长方体长度 以毫米计在x方向上的长度
+ConcWidth=30.0   #长方体宽度  以毫米计在z方向上的长度
+ConcHeight=60.0  #长方体高度  以毫米计在y方向上的长度
+#以下是缺口的边缘区域设定
+GapLength=1.0    #缺口沿着x方向上的长度，以毫米计
+GapWidth=30.0    #缺口沿着z方向上的长度，以毫米计
+GapHeight=30.0    #缺口沿着y方向上的长度，以毫米计
+#以下是以体积计投放骨料要用到的变量
+VolumeConc=ConcLength*ConcWidth*ConcHeight-GapLength*GapWidth*GapHeight    #混凝土的体积
+AggVolume=0         #粗骨料体积
+#判断外径instance（骨料+ITZ）投放是否干涉的函数interact_judgement
+def interact_judgement (points,point):             #这里的point指的是随机生成的新的点要与points这个list中的每个点去比对
+    x1=point[0]
+    y1=point[1]
+    z1=point[2]
+    r1=point[3]
+    sign=True
+    for p in points:
+        x2=p[0]
+        y2=p[1]
+        z2=p[2]
+        r2=p[3]
+        distance=sqrt((x1-x2)**2+(y1-y2)**2+(z1-z2)**2)
+        if distance < (r1+r2)+1.0:    #加0.1为了保证划分网格少出现过于狭小的网格
+            sign=False
+            break     #将for循环结束 输出false
+    return sign
+#上面公式若if为true表示 point与points中的一个点相交，则break让for循环不执行输出sign=false，若point与points中每个点都不相交，则输出为true
+k=0   #球体的编号
+points=[]    #建立一个list 其中包含已通过干涉判断的外径instance的 坐标和半径
+SphereData=[]   #比points多一个球体的编号（编号，x，y，z,半径，纯骨料半径，ITZ厚度）
+#将球体和半径随机生成
+#其中直径大小在9.5~16毫米的粗骨料占混凝土体积比为27.846%（使用表观密度算的，但是轻骨料吸水需要利用吸水后的密度计算）25.88%
+#其中直径大小在5~9.5毫米的粗骨料占混凝土体积比为11.154%（使用表观密度算的，但是轻骨料吸水需要利用吸水后的密度计算）10.37%
+#先要生成大粒径骨料的信息，这样可避免零散的小骨料占据整体空间，影响大骨料的投放。
+#由于itz的厚度为25~30微米会出现网格划分失败，要加大厚度 换成0.2到0.3毫米，则代码直接如下处理  SphereRadius表示（纯骨料加ITZ）
+#投放分区1的大骨料
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(4.75, 8.0)
+    ITZ_thickness = 2.0       #在这里可以也利用随机数，与前面相似的调用方式
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance=SphereRadius+1.0
+    x1 = np.random.uniform(0.0+BoundaryDistance,ConcLength-BoundaryDistance)
+    y1 = np.random.uniform(GapHeight+BoundaryDistance,ConcHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.02/2:   #为了快速运行，先减少体积占比
+        break
+#投放分区1的小骨料
+AggVolume = 0
+while True:
+    SphereRadiusNet = np.random.uniform(2.5, 4.75)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.0+BoundaryDistance,ConcLength-BoundaryDistance)
+    y1 = np.random.uniform(GapHeight+BoundaryDistance,ConcHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius, SphereRadiusNet, ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius, SphereRadiusNet, ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.01 / 2:   #为了快速运行，先减少体积占比
+        break
+#投放分区2的大骨料
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(4.75, 8.0)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.0+BoundaryDistance,0.5*ConcLength-0.5*GapLength-BoundaryDistance)
+    y1 = np.random.uniform(0.0+BoundaryDistance,GapHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.02/4:   #为了快速运行，先减少体积占比
+        break
+#投放分区2的小骨料
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(2.5, 4.75)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.0 + BoundaryDistance, 0.5 * ConcLength - 0.5 * GapLength - BoundaryDistance)
+    y1 = np.random.uniform(0.0 + BoundaryDistance, GapHeight - BoundaryDistance)
+    z1 = np.random.uniform(0.0 + BoundaryDistance, ConcWidth - BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.01/4:    #为了快速运行，先减少体积占比
+        break
+#投放分区3的大骨料
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(4.75, 8.0)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.5*ConcLength+0.5*GapLength+BoundaryDistance,ConcLength-BoundaryDistance)
+    y1 = np.random.uniform(0.0+BoundaryDistance,GapHeight-BoundaryDistance)
+    z1 = np.random.uniform(0.0+BoundaryDistance,ConcWidth-BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.02/4:    #为了快速运行，先减少体积占比
+        break
+#投放分区3的小骨料 此语句块要跑30分钟
+AggVolume=0
+while True:
+    SphereRadiusNet = np.random.uniform(2.5, 4.75)
+    ITZ_thickness = 2.0
+    SphereRadius = SphereRadiusNet + ITZ_thickness
+    BoundaryDistance = SphereRadius + 1.0
+    x1 = np.random.uniform(0.5 * ConcLength + 0.5 * GapLength + BoundaryDistance, ConcLength - BoundaryDistance)
+    y1 = np.random.uniform(0.0 + BoundaryDistance, GapHeight - BoundaryDistance)
+    z1 = np.random.uniform(0.0 + BoundaryDistance, ConcWidth - BoundaryDistance)
+    point = (x1, y1, z1, SphereRadius)
+    if len(points) == 0:
+        points.append(point)
+        SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+        AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+    else:
+        if interact_judgement(points, point):
+            points.append(point)
+            SphereData.append([k + 1, x1, y1, z1, SphereRadius,SphereRadiusNet,ITZ_thickness])
+            AggVolume = AggVolume + (4.0 / 3.0 * (np.pi) * (SphereRadiusNet ** 3))
+            k = k + 1
+    if (AggVolume / VolumeConc) >= 0.01/4:    #为了快速运行，先减少体积占比
+        break
+#建立model且保证myModel就是命名为Model-1
+if mdb.models.has_key("Model-1"):
+    myModel=mdb.models['Model-1']
+else:
+    myModel=mdb.Model(name='Model-1',modelType=STANDARD_EXPLICIT)
+#生成完整梁轮廓part和对应的instance的命令
+xmin=0
+xmax=ConcLength
+ymin=0
+ymax=ConcHeight
+zmin=0
+zmax=ConcWidth
+zlength=abs(zmax-zmin)
+mySketch_1=myModel.ConstrainedSketch(name="mySketch-1",sheetSize=200.0)
+mySketch_1.rectangle(point1=(xmin,ymin),point2=(xmax,ymax))
+myPart1=myModel.Part(name="Part-Profile",dimensionality=THREE_D,type=DEFORMABLE_BODY)
+myPart1.BaseSolidExtrude(depth=zlength,sketch=mySketch_1)
+myAssembly=myModel.rootAssembly
+myAssembly.Instance(name="Part-Profile",part=myPart1,dependent=OFF)
+del mySketch_1
+del myPart1
+#生成缺口的块体part和instance
+xmin=0.5*ConcLength-0.5*GapLength
+xmax=0.5*ConcLength+0.5*GapLength
+ymin=0
+ymax=GapHeight
+zmin=0
+zmax=GapWidth
+zlength=abs(zmax-zmin)
+mySketch_2=myModel.ConstrainedSketch(name="mySketch-2",sheetSize=200.0)
+mySketch_2.rectangle(point1=(xmin,ymin),point2=(xmax,ymax))
+myPart2=myModel.Part(name="Part-Gap",dimensionality=THREE_D,type=DEFORMABLE_BODY)
+myPart2.BaseSolidExtrude(depth=zlength,sketch=mySketch_2)
+myAssembly=myModel.rootAssembly
+myAssembly.Instance(name="Part-Gap",part=myPart2,dependent=OFF)
+del mySketch_2
+del myPart2
+###################
+#在GUI界面生成离散刚体的Punch part和instance
+ConcLength=300.0
+ConcWidth=30.0
+ConcHeight=60.0
+r1=1/12*ConcLength
+圆心（1/2ConcLength,ConcHeight+r1)
+下半圆弧
+拉伸的depth=ConcWidth
+#在GUI界面生成支座pin的 part和instance
+r2=1/60*ConcLength
+Pin-1的圆心为(1/6ConcLength,-r2)
+Pin-2的圆心为(5/6ConcLength,-r2)
+均为上半圆弧
+拉伸的depth=ConcWidth
+####################
+#批量化生成外径instance（骨料+ITZ) #用循环的意思是每循环一次只是生成一个instance Part-Exball-{}
+b=SphereData
+for i in range(len(SphereData)):
+    mySketch_1=myModel.ConstrainedSketch(name="mySketch-1",sheetSize=200.0)
+    mySketch_1.ConstructionLine(point1=(b[i][1], b[i][2] + b[i][4]), point2=(b[i][1], b[i][2] - b[i][4]))  # 旋转轴的端点连线
+    curve = mySketch_1.CircleByCenterPerimeter(center=(b[i][1], b[i][2]), point1=(b[i][1] + b[i][4], b[i][2]))  # curve为圆线
+    mySketch_1.autoTrimCurve(curve1=curve, point1=(b[i][1] - b[i][4], b[i][2]))  # 自动修剪函数中的点是被修剪掉的那部分的一点
+    mySketch_1.Line(point1=(b[i][1], b[i][2] + b[i][4]), point2=(b[i][1], b[i][2] - b[i][4])) #补齐形成完整图形才可旋转
+    partName = 'Part-ExBall-{}'.format(i)
+    myPart1 = myModel.Part(name=partName, dimensionality=THREE_D, type=DEFORMABLE_BODY)  # 这里是一次循环就有个myPart1,会被新小球不断覆盖
+    myPart1.BaseSolidRevolve(sketch=mySketch_1, angle=360.0, flipRevolveDirection=OFF)
+    myAssembly = myModel.rootAssembly
+    myAssembly.Instance(name="Part-ExBall-{}".format(i), part=myPart1, dependent=OFF)
+    myAssembly.translate(instanceList=("Part-ExBall-{}".format(i),), vector=(0.0, 0.0, b[i][3]))
+    del mySketch_1
+    del myPart1
+#批量化生成纯骨料小球 Part-Ball
+for i in range(len(SphereData)):     #SphereData比points多一个球体的编号（编号，x，y，z,半径，纯骨料半径，ITZ厚度）
+    mySketch_1 = myModel.ConstrainedSketch(name="mySketch-1", sheetSize=200.0)
+    mySketch_1.ConstructionLine(point1=(b[i][1], b[i][2] + b[i][5]), point2=(b[i][1], b[i][2] - b[i][5]))  # 旋转轴的端点连线
+    curve = mySketch_1.CircleByCenterPerimeter(center=(b[i][1], b[i][2]), point1=(b[i][1] + b[i][5], b[i][2]))  # 曲线为一个圆
+    mySketch_1.autoTrimCurve(curve1=curve, point1=(b[i][1] - b[i][5], b[i][2]))  # 自动修剪函数中的点 是被修剪掉的那部分的一点
+    mySketch_1.Line(point1=(b[i][1], b[i][2] + b[i][5]), point2=(b[i][1], b[i][2] - b[i][5]))
+    partName = 'Part-Ball-{}'.format(i)
+    myPart1 = myModel.Part(name=partName, dimensionality=THREE_D, type=DEFORMABLE_BODY)  # 这里是一次循环就有个myPart1,会被新小球不断覆盖
+    myPart1.BaseSolidRevolve(sketch=mySketch_1, angle=360.0, flipRevolveDirection=OFF)
+    myAssembly = myModel.rootAssembly
+    myAssembly.Instance(name="Part-Ball-{}".format(i), part=myPart1, dependent=OFF)
+    myAssembly.translate(instanceList=("Part-Ball-{}".format(i),), vector=(0.0, 0.0, b[i][3]))
+    del mySketch_1
+    del myPart1
+#再用布尔差集批量化生成ITZ从外径（骨料＋itz）减去内径纯骨料 ##主要利用InstanceFromBooleanCut#经查询可知生成的instance名字为ITZ-{}-1,会自动补充生成part 名字为ITZ-{}
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.InstanceFromBooleanCut(
+        name="ITZ-{}".format(i),
+        instanceToBeCut=mdb.models["Model-1"].rootAssembly.instances['Part-ExBall-{}'.format(i)],
+        cuttingInstances=(mdb.models['Model-1'].rootAssembly.instances['Part-Ball-{}'.format(i)],),
+        originalInstances=SUPPRESS)
+#此时的Part-ExBall-{}和Part-Ball-{}都已经被限制了SUPPRESS所以要用resume将其特性恢复
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['Part-ExBall-{}'.format(i)].resume()
+#分开运行
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['Part-Ball-{}'.format(i)].resume()
+#从棱柱体砂浆中批量扣除所有（骨料+ITZ)
+for i in range(len(SphereData)):
+    if i==0:
+        updatepart="Part-Profile"
+    else:
+        updatepart="updatepart-{}-1".format(i)
+    updatepart2="updatepart-"+str(i+1)
+    mdb.models["Model-1"].rootAssembly.InstanceFromBooleanCut(
+        name=updatepart2,
+        instanceToBeCut=mdb.models["Model-1"].rootAssembly.instances[updatepart],
+        cuttingInstances=(mdb.models['Model-1'].rootAssembly.instances['Part-ExBall-{}'.format(i)],),
+        originalInstances=SUPPRESS)
+#仍然用布尔差集InstanceFromBooleanCut扣除缺口块体
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanCut(
+        name="mortar",
+        instanceToBeCut=mdb.models["Model-1"].rootAssembly.instances["updatepart-{}-1".format(len(SphereData))],
+        cuttingInstances=(mdb.models['Model-1'].rootAssembly.instances["Part-Gap"],),
+        originalInstances=SUPPRESS)
+#生成三个截面section，并且为三个截面设定不同的材料属性 section1给Ball的part上面,section2给砂浆块的part上面，
+#section3给ITZ的part上面,section只可以在part上面 不可以在instance上面
+#给一个弹性模量（MPa)和泊松比（无量纲）只用Elastic 骨料的弹性模量为50000Mpa 泊松比为0.16
+mdb.models['Model-1'].Material(name='Material-Ball')
+mdb.models['Model-1'].materials["Material-Ball"].Elastic(table=((50000.0,0.16),))
+mdb.models["Model-1"].HomogeneousSolidSection(name="Section-Ball",material="Material-Ball",thickness=None)
+#在GUI界面将抗拉强度和断裂能编辑上去
+#要将每个part下面的体元素都变成一个Set，防止出现merge的时候变成同一种section 再将Section-Ball赋予到ball的part上面，要利用for循环一个一个赋予
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].Set(name="Part-Ball-{}".format(i),
+                                                              cells=mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].cells)
+    mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].\
+        SectionAssignment(region=mdb.models["Model-1"].parts["Part-Ball-{}".format(i)].sets["Part-Ball-{}".format(i)],
+                          sectionName="Section-Ball",
+                          offset=0.0,
+                          offsetType = MIDDLE_SURFACE,
+                          offsetField = "",
+                          thicknessAssignment = FROM_SECTION)
+#给一个弹性模量（MPa)和泊松比（无量纲）只用Elastic 砂浆的弹性模量为30000.0Mpa 泊松比为0.22 实际上只用给"updatepart-{}".format(len(SphereData))
+mdb.models['Model-1'].Material(name='Material-Mortar')
+mdb.models['Model-1'].materials["Material-Mortar"].Elastic(table=((30000.0,0.22),))
+mdb.models["Model-1"].HomogeneousSolidSection(name="Section-Mortar",material="Material-Mortar",thickness=None)
+#在GUI界面将抗拉强度和断裂能编辑上去
+mdb.models["Model-1"].parts["mortar"].Set(name="mortar",
+                                          cells=mdb.models["Model-1"].parts["mortar"].cells)
+mdb.models["Model-1"].parts["mortar"].\
+        SectionAssignment(region=mdb.models["Model-1"].parts["mortar"].sets["mortar"],
+                          sectionName="Section-Mortar",
+                          offset=0.0,
+                          offsetType = MIDDLE_SURFACE,
+                          offsetField = "",
+                          thicknessAssignment = FROM_SECTION)
+#给一个弹性模量（MPa)和泊松比（无量纲）只用Elastic 界面层ITZ的弹性模量为22500.0Mpa 泊松比为0.22
+mdb.models['Model-1'].Material(name='Material-ITZ')
+mdb.models['Model-1'].materials["Material-ITZ"].Elastic(table=((22500.0,0.22),))
+mdb.models["Model-1"].HomogeneousSolidSection(name="Section-ITZ",material="Material-ITZ",thickness=None)
+#在GUI界面将抗拉强度和断裂能编辑上去
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].parts["ITZ-{}".format(i)].Set(name="ITZ-{}".format(i),
+                                                              cells=mdb.models["Model-1"].parts["ITZ-{}".format(i)].cells)
+    mdb.models["Model-1"].parts["ITZ-{}".format(i)].\
+        SectionAssignment(region=mdb.models["Model-1"].parts["ITZ-{}".format(i)].sets["ITZ-{}".format(i)],
+                          sectionName="Section-ITZ",
+                          offset=0.0,
+                          offsetType = MIDDLE_SURFACE,
+                          offsetField = "",
+                          thicknessAssignment = FROM_SECTION)
+#####进入assembly模块，将所有的有用的instances（纯骨料、ITZ,砂浆块）都Merge到一起去生成part-total且合并的instances最好全部为dependent
+Cuminstances=[]    #建立一个list存放
+for i in range(len(SphereData)):
+    Cuminstances.append(mdb.models["Model-1"].rootAssembly.instances["Part-Ball-{}".format(i)])
+    Cuminstances.append(mdb.models["Model-1"].rootAssembly.instances["ITZ-{}-1".format(i)])
+#此处要分别运行，否则会报错！！
+Cuminstances.append(mdb.models["Model-1"].rootAssembly.instances["mortar-1"])
+Cuminstances=tuple(Cuminstances)   #要将其变成元组
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanMerge(name="Part-total",instances=Cuminstances,
+                                                            keepIntersections=ON,
+                                                            domain=GEOMETRY)
+#####上述merge以后要检查part-total是否有Ball ITZ mortar对应的set,这是保证合并后材料属性仍然被保留的方式
+#进入step模块 编辑分析步和场输出--进入interaction模块--进入load模块--进入mesh模块
+##先进入interaction模块，将纯骨料外表面与ITZ内表面tie到一起
+#由于round函数不精确，所以先设定一个四舍五入的函数
+def round_founction (num,floats):
+    num1=float(num*float(10**floats))
+    num2=int(num*float(10**floats))
+    if int((num1-num2)*10) < 5:
+        return float(num2/float(10**floats))
+    elif int ((num1-num2)*10) >= 5:
+        return float (num2/float(10**floats)+float(0.1**floats))
+# 将纯骨料外表面与ITZ内表面选中并tie到一起
+b=SphereData
+for i in range(len(SphereData)):
+    x1=round_founction (b[i][1]+b[i][5],6)
+    y1=round_founction (b[i][2],6)
+    z1=0
+    myPartBall = mdb.models['Model-1'].parts['Part-Ball-{}'.format(i)]
+    myFaceBall = myPartBall.faces.findAt(((x1, y1, z1), ))
+    myPartBall.Surface(side1Faces=myFaceBall, name='Surf-Ball-{}'.format(i))
+#分开运行
+b = SphereData
+for i in range(len(SphereData)):
+    x1 = round_founction(b[i][1] + b[i][5], 6)
+    y1 = round_founction(b[i][2], 6)
+    z1 =round_founction(b[i][3], 6)
+    myPartITZ = mdb.models['Model-1'].parts['ITZ-{}'.format(i)]
+    myFaceITZ = myPartITZ.faces.findAt(((x1, y1, z1), ))
+    myPartITZ.Surface(side1Faces=myFaceITZ, name='Surf-ITZ-{}'.format(i))
+#分开运行
+for i in range(len(SphereData)):
+    region1=mdb.models['Model-1'].rootAssembly.instances['Part-Ball-{}'.format(i)].surfaces['Surf-Ball-{}'.format(i)]
+    region2=mdb.models['Model-1'].rootAssembly.instances['ITZ-{}-1'.format(i)].surfaces['Surf-ITZ-{}'.format(i)]
+    mdb.models['Model-1'].Tie(name='Constraint-Ball-ITZ-{}'.format(i),
+                              master=region1,
+                              slave=region2,
+                              positionToleranceMethod=COMPUTED, adjust=ON,
+                              tieRotations=ON, thickness=ON)
+#将ITZ 骨料 砂浆分别生成display group 再去划分网格 可以避免原instance被suppress
+#将ITZ 骨料 砂浆分别生成display group 再去划分网格 可以避免原instance被suppress
+a = mdb.models['Model-1'].rootAssembly
+session.viewports['Viewport: 1'].setValues(displayedObject=a)
+set1 = mdb.models['Model-1'].rootAssembly.allInstances['ITZ-0-1'].sets['ITZ-0']  #后续的是自动生成的set
+leaf = dgm.LeafFromSets(sets=(set1, set2, set3, set4, set5, set6, set7, set8,
+    set9, set10, set11, set12, set13, set14, set15, set16, set17, set18, set19,
+    set20, set21, set22, set23, set24, set25, set26, set27, set28, set29,
+    set30, set31, set32, set33, set34, set35, set36, set37, set38, set39,
+    set40, set41, set42, set43, set44, set45, set46, set47, set48, set49,
+    set50, set51, set52, set53, set54, set55, set56, set57, set58, ))
+dg = session.DisplayGroup(leaf=leaf, name='DisplayGroup-ITZ')
+dg1= session.displayGroups['DisplayGroup-ITZ']
+session.viewports['Viewport: 1'].assemblyDisplay.setValues(
+    visibleDisplayGroups=(dg1, ))
+#########
+set1 = mdb.models['Model-1'].rootAssembly.allInstances['Part-Ball-0'].sets['Part-Ball-0']  ##后续的是自动生成的set
+leaf = dgm.LeafFromSets(sets=(set1, set2, set3, set4, set5, set6, set7, set8,
+    set9, set10, set11, set12, set13, set14, set15, set16, set17, set18, set19,
+    set20, set21, set22, set23, set24, set25, set26, set27, set28, set29,
+    set30, set31, set32, set33, set34, set35, set36, set37, set38, set39,
+    set40, set41, set42, set43, set44, set45, set46, set47, set48, set49,
+    set50, set51, set52, set53, set54, set55, set56, set57, set58, ))
+dg = session.DisplayGroup(leaf=leaf, name='DisplayGroup-ball')
+#要将itz和ball对应的instance先变成independent
+for i in range(len(SphereData)):
+    mdb.models['Model-1'].rootAssembly.makeIndependent(instances=(mdb.models['Model-1'].rootAssembly.instances['ITZ-{}-1'.format(i)], ))
+for i in range(len(SphereData)):
+    mdb.models['Model-1'].rootAssembly.makeIndependent(instances=(mdb.models['Model-1'].rootAssembly.instances['Part-Ball-{}'.format(i)], ))
+##将ITZ单独划分网格，骨料和砂浆是二阶四面体网格,为了减少单元数量,且砂浆不用merge直接为mortar
+Cuminstances_Ball=[]
+for i in range(len(SphereData)):
+    Cuminstances_Ball.append(mdb.models["Model-1"].rootAssembly.instances["Part-Ball-{}".format(i)])
+#分开运行
+Cuminstances_Ball=tuple(Cuminstances_Ball)
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanMerge(name="Part-total-Ball",instances=Cuminstances_Ball,
+                                                            keepIntersections=ON,
+                                                            originalInstances=SUPPRESS,
+                                                            domain=GEOMETRY)
+Cuminstances_ITZ=[]
+for i in range(len(SphereData)):
+    Cuminstances_ITZ.append(mdb.models["Model-1"].rootAssembly.instances["ITZ-{}-1".format(i)])
+# 分开运行
+Cuminstances_ITZ=tuple(Cuminstances_ITZ)
+mdb.models["Model-1"].rootAssembly.InstanceFromBooleanMerge(name="Part-total-ITZ",instances=Cuminstances_ITZ,
+                                                            keepIntersections=ON,
+                                                            originalInstances=SUPPRESS,
+                                                            domain=GEOMETRY)
+#将两个边界还原
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['Part-Ball-{}'.format(i)].resume()
+#分开来运行
+for i in range(len(SphereData)):
+    mdb.models["Model-1"].rootAssembly.features['ITZ-{}-1'.format(i)].resume()
+
+#可以用GUI界面seed 2/0.055、0.1 对part进行mesh，也可以用以下命令
+p = mdb.models['Model-1'].parts['Part-total']
+p.seedPart(size=2.0, deviationFactor=0.05, minSizeFactor=0.02)
+#要在GUI界面先mesh controls 变成四面体自由网格，再输入下列命令
+p = mdb.models['Model-1'].parts['Part-total']
+p.generateMesh()
+#划分完成后，用GUI界面上的remove selected——element 可查看内部剖分情况
