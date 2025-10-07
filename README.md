@@ -23,11 +23,11 @@ ITZ_thickness = 2.0   # ITZ thickness
 - Tie constraints between aggregate and ITZ
 - Ready for analysis
 ---
-*For research use only*
 ##  Modeling Showcase and Visualization
-<img width="455" height="193" alt="image" src="https://github.com/user-attachments/assets/6c363056-8dc9-4d33-9d25-92c616ba3e43" />
 <img width="757" height="654" alt="image" src="https://github.com/user-attachments/assets/72156407-c8da-45d3-af1f-4c91718fbc51" />
 <img width="1578" height="674" alt="image" src="https://github.com/user-attachments/assets/9dcea7b7-c538-4bd9-84d6-3a1d723797a4" />
 <img width="447" height="198" alt="image" src="https://github.com/user-attachments/assets/aad9f014-757e-46dc-a125-4b29cd5ddb26" />
 <img width="491" height="193" alt="image" src="https://github.com/user-attachments/assets/1f4939c3-bbc8-4fb7-9098-d76707dac6c0" />
 <img width="491" height="193" alt="image" src="https://github.com/user-attachments/assets/28ee34b3-5d9a-4f8e-a5a2-e1c395556d98" />
+---
+*For research use only*
